@@ -336,7 +336,7 @@ int ftdi_usb_find_all(struct ftdi_context *ftdi, struct ftdi_device_list **devli
                 desc.idVendor == vendor && desc.idProduct == product) ||
                 (!(vendor || product) &&
                  (desc.idVendor == 0x403) && (desc.idProduct == 0x6001 || desc.idProduct == 0x6010
-                                              || desc.idProduct == 0x6011 || desc.idProduct == 0x6014
+                                              || desc.idProduct == 0x6011 || desc.idProduct == 0x6014 || desc.idProduct == 0x6041
                                               || desc.idProduct == 0x6015)))
         {
             *curdev = (struct ftdi_device_list*)malloc(sizeof(struct ftdi_device_list));
@@ -549,7 +549,7 @@ static unsigned int _ftdi_determine_max_packet_size(struct ftdi_context *ftdi, l
     // Determine maximum packet size. Init with default value.
     // New hi-speed devices from FTDI use a packet size of 512 bytes
     // but could be connected to a normal speed USB hub -> 64 bytes packet size.
-    if (ftdi->type == TYPE_2232H || ftdi->type == TYPE_4232H || ftdi->type == TYPE_232H)
+    if (ftdi->type == TYPE_2232H || ftdi->type == TYPE_4232H || ftdi->type == TYPE_4233HPQ || ftdi->type == TYPE_232H)
         packet_size = 512;
     else
         packet_size = 64;
@@ -694,6 +694,8 @@ int ftdi_usb_open_dev(struct ftdi_context *ftdi, libusb_device *dev)
         ftdi->type = TYPE_232H;
     else if (desc.bcdDevice == 0x1000)
         ftdi->type = TYPE_230X;
+    else if (desc.bcdDevice == 0x2900)
+        ftdi->type = TYPE_4233HPQ;
 
     // Determine maximum packet size
     ftdi->max_packet_size = _ftdi_determine_max_packet_size(ftdi, dev);
@@ -1398,7 +1400,7 @@ static int ftdi_convert_baudrate(int baudrate, struct ftdi_context *ftdi,
 
 #define H_CLK 120000000
 #define C_CLK  48000000
-    if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H) || (ftdi->type == TYPE_232H))
+    if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H) || (ftdi->type == TYPE_4233HPQ) || (ftdi->type == TYPE_232H))
     {
         if(baudrate*10 > H_CLK /0x3fff)
         {
@@ -1423,7 +1425,7 @@ static int ftdi_convert_baudrate(int baudrate, struct ftdi_context *ftdi,
     }
     // Split into "value" and "index" values
     *value = (unsigned short)(encoded_divisor & 0xFFFF);
-    if (ftdi->type == TYPE_2232H || ftdi->type == TYPE_4232H || ftdi->type == TYPE_232H)
+    if (ftdi->type == TYPE_2232H || ftdi->type == TYPE_4232H || ftdi->type == TYPE_4232H || ftdi->type == TYPE_232H)
     {
         *index = (unsigned short)(encoded_divisor >> 8);
         *index &= 0xFF00;
@@ -2612,6 +2614,8 @@ int ftdi_eeprom_initdefaults(struct ftdi_context *ftdi, const char * manufacture
         eeprom->product_id = 0x6001;
     else if (ftdi->type == TYPE_4232H)
         eeprom->product_id = 0x6011;
+    else if (ftdi->type == TYPE_4233HPQ)
+        eeprom->product_id = 0x6041;
     else if (ftdi->type == TYPE_232H)
         eeprom->product_id = 0x6014;
     else if (ftdi->type == TYPE_230X)
@@ -2657,6 +2661,7 @@ int ftdi_eeprom_initdefaults(struct ftdi_context *ftdi, const char * manufacture
             case TYPE_4232H: default_product = "FT4232H"; break;
             case TYPE_232H:  default_product = "Single-RS232-HS"; break;
             case TYPE_230X:  default_product = "FT230X Basic UART"; break;
+            case TYPE_4233HPQ: default_product = "FT4233HPQ"; break;
             default:
                 ftdi_error_return(-3, "Unknown chip type");
         }
@@ -2729,6 +2734,9 @@ int ftdi_eeprom_initdefaults(struct ftdi_context *ftdi, const char * manufacture
             break;
         case TYPE_230X:
             eeprom->release_number = 0x1000;
+            break;
+        case TYPE_4233HPQ:
+            eeprom->release_number = 0x2900;
             break;
         default:
             eeprom->release_number = 0x00;
@@ -2972,6 +2980,9 @@ int ftdi_eeprom_build(struct ftdi_context *ftdi)
         case TYPE_4232H:
             user_area_size = 86;
             break;
+        case TYPE_4233HPQ:
+            user_area_size = 86;
+            break;
         case TYPE_232H:
             user_area_size = 80;
             break;
@@ -3057,6 +3068,9 @@ int ftdi_eeprom_build(struct ftdi_context *ftdi)
         case TYPE_4232H:
             i += 2;
 			/* Fall through*/
+        case TYPE_4233HPQ:
+            i += 2;
+            /* Fall through*/
         case TYPE_R:
             i += 2;
 			/* Fall through*/
@@ -3127,6 +3141,16 @@ int ftdi_eeprom_build(struct ftdi_context *ftdi)
         i++;
     }
 
+    if (ftdi->type > TYPE_BM && ftdi->type != TYPE_4233HPQ)
+    {
+        output[i & eeprom_size_mask] = 0x02; /* as seen when written with FTD2XX */
+        i++;
+        output[i & eeprom_size_mask] = 0x03; /* as seen when written with FTD2XX */
+        i++;
+        output[i & eeprom_size_mask] = eeprom->is_not_pnp; /* as seen when written with FTD2XX */
+        i++;
+    }
+    
     if (ftdi->type > TYPE_AM) /* use_serial not used in AM devices */
     {
         if (eeprom->use_serial)
@@ -3384,6 +3408,87 @@ int ftdi_eeprom_build(struct ftdi_context *ftdi)
             output[0x18] = eeprom->chip;
 
             break;
+
+        case TYPE_4233HPQ:
+            if (eeprom->channel_a_driver)
+                output[0x00] |= DRIVER_VCP;
+            else
+                output[0x00] &= ~DRIVER_VCP;
+            if (eeprom->channel_b_driver)
+                output[0x01] |= DRIVER_VCP;
+            else
+                output[0x01] &= ~DRIVER_VCP;
+            if (eeprom->channel_c_driver)
+                output[0x00] |= (DRIVER_VCP << 4);
+            else
+                output[0x00] &= ~(DRIVER_VCP << 4);
+            if (eeprom->channel_d_driver)
+                output[0x01] |= (DRIVER_VCP << 4);
+            else
+                output[0x01] &= ~(DRIVER_VCP << 4);
+
+            if (eeprom->suspend_pull_downs)
+                output[0x0a] |= 0x4;
+            else
+                output[0x0a] &= ~0x4;
+
+            if (eeprom->channel_a_rs485enable)
+                output[0x0b] |= CHANNEL_IS_RS485 << 0;
+            else
+                output[0x0b] &= ~(CHANNEL_IS_RS485 << 0);
+            if (eeprom->channel_b_rs485enable)
+                output[0x0b] |= CHANNEL_IS_RS485 << 1;
+            else
+                output[0x0b] &= ~(CHANNEL_IS_RS485 << 1);
+            if (eeprom->channel_c_rs485enable)
+                output[0x0b] |= CHANNEL_IS_RS485 << 2;
+            else
+                output[0x0b] &= ~(CHANNEL_IS_RS485 << 2);
+            if (eeprom->channel_d_rs485enable)
+                output[0x0b] |= CHANNEL_IS_RS485 << 3;
+            else
+                output[0x0b] &= ~(CHANNEL_IS_RS485 << 3);
+
+            if (eeprom->group0_drive > DRIVE_16MA)
+                output[0x0c] |= DRIVE_16MA;
+            else
+                output[0x0c] |= eeprom->group0_drive;
+            if (eeprom->group0_schmitt)
+                output[0x0c] |= IS_SCHMITT;
+            if (eeprom->group0_slew)
+                output[0x0c] |= SLOW_SLEW;
+
+            if (eeprom->group1_drive > DRIVE_16MA)
+                output[0x0c] |= DRIVE_16MA<<4;
+            else
+                output[0x0c] |= eeprom->group1_drive<<4;
+            if (eeprom->group1_schmitt)
+                output[0x0c] |= IS_SCHMITT<<4;
+            if (eeprom->group1_slew)
+                output[0x0c] |= SLOW_SLEW<<4;
+
+            if (eeprom->group2_drive > DRIVE_16MA)
+                output[0x0d] |= DRIVE_16MA;
+            else
+                output[0x0d] |= eeprom->group2_drive;
+            if (eeprom->group2_schmitt)
+                output[0x0d] |= IS_SCHMITT;
+            if (eeprom->group2_slew)
+                output[0x0d] |= SLOW_SLEW;
+
+            if (eeprom->group3_drive > DRIVE_16MA)
+                output[0x0d] |= DRIVE_16MA<<4;
+            else
+                output[0x0d] |= eeprom->group3_drive<<4;
+            if (eeprom->group3_schmitt)
+                output[0x0d] |= IS_SCHMITT<<4;
+            if (eeprom->group3_slew)
+                output[0x0d] |= SLOW_SLEW<<4;
+
+            output[0x18] = eeprom->chip;
+
+            break;
+            
         case TYPE_232H:
             output[0x00] = type2bit(eeprom->channel_a_type, TYPE_232H);
             if (eeprom->channel_a_driver)
@@ -3463,6 +3568,9 @@ int ftdi_eeprom_build(struct ftdi_context *ftdi)
         case TYPE_4232H:
             free_start += 2;
 			/* Fall through*/
+        case TYPE_4233HPQ:
+            free_start += 2;
+            /* Fall through*/
         case TYPE_R:
             free_start += 2;
 			/* Fall through*/
@@ -3753,7 +3861,7 @@ int ftdi_eeprom_decode(struct ftdi_context *ftdi, int verbose)
         eeprom->cbus_function[3] = (buf[0x15] >> 4) & 0x0f;
         eeprom->cbus_function[4] = buf[0x16] & 0x0f;
     }
-    else if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H))
+    else if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H) || (ftdi->type == TYPE_4233HPQ))
     {
         eeprom->channel_a_driver = !!(buf[0x00] & DRIVER_VCP);
         eeprom->channel_b_driver = !!(buf[0x01] & DRIVER_VCP);
@@ -3876,7 +3984,7 @@ int ftdi_eeprom_decode(struct ftdi_context *ftdi, int verbose)
                     (eeprom->data_order)?"LSB":"MSB",
                     (eeprom->flow_control)?"":"No ");
         }
-        if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H))
+        if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H) || (ftdi->type == TYPE_4233HPQ))
             fprintf(stdout,"Channel B has Mode %s%s%s\n",
                     channel_mode[eeprom->channel_b_type],
                     (eeprom->channel_b_driver)?" VCP":"",
@@ -3885,7 +3993,7 @@ int ftdi_eeprom_decode(struct ftdi_context *ftdi, int verbose)
                 eeprom->use_usb_version)
             fprintf(stdout,"Use explicit USB Version %04x\n",eeprom->usb_version);
 
-        if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H))
+        if ((ftdi->type == TYPE_2232H) || (ftdi->type == TYPE_4232H) || (ftdi->type == TYPE_4233HPQ))
         {
             fprintf(stdout,"%s has %d mA drive%s%s\n",
                     (ftdi->type == TYPE_2232H)?"AL":"A",
@@ -4598,6 +4706,9 @@ int ftdi_write_eeprom_location(struct ftdi_context *ftdi, int eeprom_addr,
             break;
         case TYPE_2232H:
         case TYPE_4232H:
+            chip_type_location = 0x18;
+            break;
+        case TYPE_4233HPQ:
             chip_type_location = 0x18;
             break;
         case TYPE_232H:

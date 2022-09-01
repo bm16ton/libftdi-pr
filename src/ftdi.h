@@ -53,6 +53,7 @@ enum ftdi_chip_type
     TYPE_4232H=5,
     TYPE_232H=6,
     TYPE_230X=7,
+    TYPE_4233HPQ=8,
 };
 /** Parity mode for ftdi_set_line_property() */
 enum ftdi_parity_type { NONE=0, ODD=1, EVEN=2, MARK=3, SPACE=4 };
